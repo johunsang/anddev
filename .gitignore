@@ -1,0 +1,4 @@
+# 자격증명/상태/로그 (절대 커밋 금지)
+.anddev/
+notify.conf
+*.log

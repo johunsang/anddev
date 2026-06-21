@@ -1,0 +1,15 @@
+# anddev 이메일 알림 설정 (선택)
+#
+# 이 파일을 폰의  ~/.anddev/notify.conf  로 복사하고 값을 채우면,
+# start.sh 가 터널 주소를 뜰 때마다 이메일로 보내줍니다.
+#
+#   cp notify.conf.example ~/.anddev/notify.conf
+#   nano ~/.anddev/notify.conf
+#
+# Gmail 은 일반 비밀번호가 아니라 "앱 비밀번호"(16자)가 필요합니다:
+#   Google 계정 → 보안 → 2단계 인증 → 앱 비밀번호 생성
+
+NOTIFY_TO=johunsang@gmail.com
+SMTP_USER=youraddress@gmail.com
+SMTP_PASS=앱비밀번호16자리붙여넣기
+SMTP_URL=smtps://smtp.gmail.com:465
