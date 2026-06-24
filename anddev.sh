@@ -397,6 +397,25 @@ start_main() {
 # connect — PC 에서 폰 개발서버로 접속 (원본: connect.sh)
 #   브라우저 인증(codex 의 localhost:1455 콜백)을 위해 포트포워딩을 포함한다.
 # =============================================================================
+# --- D9: 입력 검증 (계약적 사고 — 외부 입력 불신) --------------------------
+#   host 는 ssh 의 ProxyCommand 문자열에 박혀 '/bin/sh -c' 로 실행된다. 검증 없이
+#   넣으면 'x.trycloudflare.com; reboot' 같은 인자가 쉘 명령 주입이 된다.
+#   호스트명/계정에 쓰일 수 없는 문자가 하나라도 있으면 거부(주입 차단).
+#   trycloudflare 전용으로 묶지 않는 건 Named Tunnel(커스텀 도메인) 탈출구 보존용 —
+#   대신 호스트명 문자셋([A-Za-z0-9.-])만 허용해 메타문자(;|&$`(){}<> 공백 등)를 막는다.
+valid_hostname() {  # rc 0 = 유효
+  case "$1" in
+    ''|*[!A-Za-z0-9.-]*) return 1 ;;
+  esac
+  return 0
+}
+valid_ssh_user() {  # rc 0 = 유효 (유닉스 계정 안전 문자만)
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
 connect_main() {
   local host="${1:-}"
   local user_name="${2:-dev}"
@@ -404,6 +423,15 @@ connect_main() {
   if [ -z "$host" ]; then
     echo "사용법: bash anddev.sh connect <호스트.trycloudflare.com> [사용자=dev]" >&2
     exit 1
+  fi
+  if ! valid_hostname "$host"; then
+    c_err "호스트 형식이 올바르지 않습니다 (영문/숫자/.- 만 허용): ${host}"
+    c_err "ProxyCommand 쉘 주입을 막기 위해 거부합니다."
+    exit 2
+  fi
+  if ! valid_ssh_user "$user_name"; then
+    c_err "사용자명이 올바르지 않습니다 (영문/숫자/._- 만 허용): ${user_name}"
+    exit 2
   fi
   command -v cloudflared >/dev/null || { echo "✗ cloudflared 가 필요합니다 (PC 에 설치)"; exit 1; }
 
