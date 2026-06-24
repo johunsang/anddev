@@ -55,6 +55,12 @@ bash anddev.sh start   # 또는 인자 없이 bash anddev.sh (자동 감지)
 설치만 다시 하려면 `bash anddev.sh setup`.
 (`setup.sh` / `start.sh` / `connect.sh` 는 `anddev.sh` 로 위임하는 하위호환 wrapper 입니다.)
 
+접속 주소를 잃었으면 (터미널이 스크롤됐거나 창을 닫았어도 **서버가 켜져 있는 동안**):
+
+```bash
+bash anddev.sh status   # 현재 호스트·사용자·비밀번호 다시 출력 (서버는 안 끔)
+```
+
 실행하면 접속 정보가 출력됩니다:
 
 ```
@@ -91,6 +97,7 @@ claude    # Claude Code
 | D5 | **단일 파일 `anddev.sh`** | 진짜 원터치 — clone 불필요, `curl` 한 줄로 설치+실행. 유일한 source of truth | 기존 `setup/start/connect.sh` 는 위임 shim 으로 보존 |
 | D6 | **폰 기능 = 파일 릴레이 브리지** | proot 게스트는 `termux-*` 바이너리에 직접 접근 불가(다른 libc/네임스페이스). 게스트가 요청 파일을 쓰면 Termux 데몬이 실행 → 결과 파일 반환 | 루팅 시 네임스페이스 공유로 직접 호출 가능 / 미설치 시 명령이 `rc=3` 으로 우아하게 실패 |
 | D7 | **소싱 가드 + 계약 테스트** | 신뢰 경계인 `bridge_dispatch`(임의 게스트 인자 → 폰 명령) 의 정규화/화이트리스트를 실폰 없이 검증. 스크립트 끝에 소싱 가드를 둬 `source` 시 함수만 로드 → `termux-*` 를 PATH 스텁으로 가짜 주입하고 경계값 4종(정상/매핑/None/변조)을 단언 | 가드는 `bash anddev.sh`/`curl\|bash` 동작 불변(소싱일 때만 `main` 생략) / 테스트는 순수 추가, 제품 경로 무영향 |
+| D8 | **`status` 서브커맨드 + 로그가 주소의 source** | Quick Tunnel URL 은 재시작마다 바뀌고 터미널 스크롤로 잃기 쉽다. 주소를 모델/메모리가 아니라 cloudflared 로그에서 파싱(`tunnel_host_from_log`)해 다시 출력 → `start_tunnel` 과 공유(중복 제거). 재연결로 URL 이 여러 개면 마지막(현재) 것을 쓴다 | 읽기 전용 진단(서버 안 끔) / 로그 없으면 빈값+안내, 실패 아님 / `pgrep` 없으면 생존표시만 생략 |
 
 ## 안드로이드 폰 기능 (Termux:API 브리지)
 
@@ -161,9 +168,11 @@ proot Ubuntu (게스트)                   Termux (호스트)
 `termux-*` 명령을 PATH 스텁으로 가짜 주입한 뒤 입력 정규화/화이트리스트를 단언할 수 있다.
 
 ```bash
-bash tests/bridge_test.sh     # 종료코드 0 = 전체 통과
+bash tests/bridge_test.sh     # 브리지 디스패처(정규화/화이트리스트)
+bash tests/tunnel_test.sh     # 터널 호스트 파싱(접속 주소의 source)
 ```
 
+각 테스트는 같은 패턴 — `anddev.sh` 를 `source` 한 뒤 외부 경계를 가짜로 채워 검증한다.
 경계값 4종(계약적 사고)으로 두른다:
 
 - **정상** — 올바른 입력이 통과하고 폰 명령에 그대로 전달되는가 (`battery`, `photo a.jpg 0`, `sms +82-10-… 본문`)
