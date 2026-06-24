@@ -2,3 +2,11 @@
 .anddev/
 notify.conf
 *.log
+
+# Broker Agent transient coordination files
+docs/wiki/decisions/broker-brief-*.md
+docs/wiki/decisions/broker-harness-*.md
+docs/wiki/decisions/broker-*-feed.md
+
+# Broker Agent code-intelligence CLI (injected, not product code)
+.broker/
