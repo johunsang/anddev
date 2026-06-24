@@ -232,6 +232,7 @@ setup_main() {
   install_distro
   gen_credentials
   provision_distro
+  bridge_setup
 
   echo
   c_ok "설치 완료!"
@@ -249,8 +250,9 @@ TUNNEL_HOST=""
 
 start_cleanup() {
   c_info "정리 중..."
-  [ -n "$CF_PID" ]   && kill "$CF_PID"   2>/dev/null || true
-  [ -n "$SSHD_PID" ] && kill "$SSHD_PID" 2>/dev/null || true
+  [ -n "$CF_PID" ]     && kill "$CF_PID"     2>/dev/null || true
+  [ -n "$BRIDGE_PID" ] && kill "$BRIDGE_PID" 2>/dev/null || true
+  [ -n "$SSHD_PID" ]   && kill "$SSHD_PID"   2>/dev/null || true
   pkill -f "sshd -D" 2>/dev/null || true
   # chroot 백엔드면 바인드 마운트 해제
   anddev_is_rooted && chroot_teardown
@@ -310,6 +312,11 @@ print_connect() {
     claude   →  URL 떠서 PC 브라우저로 승인 후 코드 붙여넣기
     codex    →  '-L 1455' 포트포워딩으로 PC 브라우저 흐름 그대로 완성
 
+  폰 기능 (접속 후 'phone-help' 로 전체 목록):
+    photo · sms · openurl · app · battery · location · clip
+    notify · vibrate · say · sensors · contacts · calllog
+    (Termux:API 앱 + 권한 필요)
+
 ==========================================
 
   (이 창을 닫으면 서버가 꺼집니다. Ctrl-C 로 종료)
@@ -365,6 +372,7 @@ start_main() {
 
   trap start_cleanup EXIT INT TERM
   start_sshd
+  bridge_start
   start_tunnel
   print_connect
   send_email
@@ -391,6 +399,205 @@ connect_main() {
     -L 1455:localhost:1455 \
     -o ProxyCommand="cloudflared access ssh --hostname ${host}" \
     "${user_name}@${host}"
+}
+
+# =============================================================================
+# 안드로이드 기능 브리지 (D6) — proot 안에서 폰 기능 호출 (전체 세트)
+#   proot 게스트는 termux-* 바이너리에 직접 접근 못 한다(다른 libc/네임스페이스).
+#   → 게스트가 스풀에 "요청 파일"을 쓰면, Termux 쪽 데몬이 읽어 해당 termux-api
+#     명령을 실행하고 결과 파일을 돌려주는 파일 릴레이 방식.
+#   스풀은 rootfs 안(= Termux 에서도 보이는 경로)에 둔다: 게스트 /opt/anddev-bridge
+#   계약적 사고: 데몬은 임의 문자열을 eval 하지 않는다 — 허용된 동사만(화이트리스트),
+#   인자는 정규화(파일명/번호/URL 스킴/패키지명) 후 개별 termux-* / am 에 전달.
+#   제공 명령: photo sms smslist openurl app battery location clip notify
+#             vibrate say sensors contacts calllog  (게스트에서 'phone-help')
+# =============================================================================
+BRIDGE_REL="/opt/anddev-bridge"                 # 게스트(우분투)에서 본 경로
+bridge_base() { echo "${ROOTFS}${BRIDGE_REL}"; }  # Termux 에서 본 실제 경로
+BRIDGE_PID=""
+
+# --- 프로토콜 ---------------------------------------------------------------
+#   요청 파일(.req):  1줄=동사, 2줄~=인자(한 줄에 하나, 게스트가 받은 그대로).
+#   응답 파일(.res):  1줄=RC=<종료코드>, 2줄~=출력. (게스트는 RC 로 exit)
+#   임시파일(.tmp)→rename(.req) 로 데몬이 반쪽짜리 파일을 읽지 않게(원자적) 한다.
+
+# --- 게스트(우분투)에 폰 명령 래퍼 설치 (멱등; Termux 에서 rootfs 에 직접 씀) -
+#   동사만 다르고 본문이 같은 래퍼들은 한 본문(__VERB__ 치환)으로 찍어낸다.
+bridge_install_guest_cmds() {
+  local bin="${ROOTFS}/usr/local/bin" base; base="$(bridge_base)"
+  mkdir -p "$bin" "$base/req" "$base/res" "$base/out"
+
+  local body
+  body="$(cat <<'GUEST'
+#!/usr/bin/env bash
+set -euo pipefail
+B=/opt/anddev-bridge; id="req-$$-${RANDOM}"
+{ printf '%s\n' '__VERB__'; for a in "$@"; do printf '%s\n' "$a"; done; } > "$B/req/$id.tmp"
+mv "$B/req/$id.tmp" "$B/req/$id.req"
+for _ in $(seq 1 120); do
+  if [ -f "$B/res/$id.res" ]; then
+    rc="$(sed -n '1s/^RC=//p' "$B/res/$id.res")"
+    sed '1d' "$B/res/$id.res"; rm -f "$B/res/$id.res"; exit "${rc:-0}"
+  fi
+  sleep 0.5
+done
+echo "✗ 응답 없음 — 브리지 데몬이 켜져 있는지 확인 (bash anddev.sh start)" >&2; exit 1
+GUEST
+)"
+
+  # 게스트명령:동사  (동사는 데몬 화이트리스트와 일치해야 함)
+  local pair name verb
+  for pair in \
+      photo:photo  sms:sms-send  smslist:sms-list  openurl:openurl  app:app \
+      battery:battery  location:location  notify:notify  vibrate:vibrate \
+      say:tts  sensors:sensors  contacts:contacts  calllog:calllog ; do
+    name="${pair%%:*}"; verb="${pair##*:}"
+    printf '%s\n' "${body//__VERB__/$verb}" > "${bin}/${name}"
+    chmod +x "${bin}/${name}"
+  done
+
+  # clip 은 클라이언트에서 분기(인자 없으면 읽기, 있으면 설정)
+  cat > "${bin}/clip" <<'GUEST'
+#!/usr/bin/env bash
+set -euo pipefail
+B=/opt/anddev-bridge; id="req-$$-${RANDOM}"
+if [ "$#" -eq 0 ]; then verb=clip-get; else verb=clip-set; fi
+{ printf '%s\n' "$verb"; for a in "$@"; do printf '%s\n' "$a"; done; } > "$B/req/$id.tmp"
+mv "$B/req/$id.tmp" "$B/req/$id.req"
+for _ in $(seq 1 120); do
+  if [ -f "$B/res/$id.res" ]; then
+    rc="$(sed -n '1s/^RC=//p' "$B/res/$id.res")"
+    sed '1d' "$B/res/$id.res"; rm -f "$B/res/$id.res"; exit "${rc:-0}"
+  fi
+  sleep 0.5
+done
+echo "✗ 응답 없음 — 브리지 데몬 확인" >&2; exit 1
+GUEST
+  chmod +x "${bin}/clip"
+
+  # 명령 목록 도우미
+  cat > "${bin}/phone-help" <<'GUEST'
+#!/usr/bin/env bash
+cat <<'H'
+anddev 폰 기능 (Termux:API 브리지) — SSH 접속 후 바로 사용:
+
+  photo [파일명] [카메라ID]    폰 카메라 촬영 → /opt/anddev-bridge/out/
+  sms <번호> <메시지...>       문자 발송 (SIM)
+  smslist                     받은 문자 목록(JSON)
+  openurl <https://...>       폰 기본 브라우저로 URL 열기
+  app <패키지명>              앱 실행 (예: app com.android.chrome)
+  battery                     배터리 상태(JSON)
+  location                    GPS 위치(JSON)
+  clip [텍스트...]            인자 없으면 읽기 / 있으면 클립보드 설정
+  notify <제목> <내용...>      상단 알림 표시
+  vibrate [ms=300]            진동
+  say <텍스트...>             TTS 로 읽기
+  sensors                     센서 목록
+  contacts                    연락처 목록(JSON)
+  calllog                     통화 기록(JSON)
+
+주의: 기능별로 폰에서 권한 팝업이 한 번 뜰 수 있음(카메라/SMS/위치/연락처).
+      Termux:API 앱(F-Droid)이 설치돼 있어야 동작합니다.
+H
+GUEST
+  chmod +x "${bin}/phone-help"
+}
+
+# --- Termux 쪽 동작 분기 (화이트리스트) — 데몬이 요청마다 호출 ---------------
+#   계약적 사고: 임의 문자열 eval 금지. 허용된 동사만, 인자는 정규화 후 개별
+#   termux-* / am 에 전달. 출력은 stdout, 결과코드는 return.
+_bridge_need() { command -v "$1" >/dev/null 2>&1 || { echo "termux-api 미설치 (pkg install termux-api + Termux:API 앱)"; return 3; }; }
+bridge_dispatch() {
+  local base; base="$(bridge_base)"
+  local verb="${1:-}"; shift || true
+  case "$verb" in
+    photo)
+      local name cam
+      name="$(printf '%s' "${1:-photo.jpg}" | tr -dc 'A-Za-z0-9._-')"; name="${name:-photo.jpg}"
+      cam="$(printf '%s' "${2:-0}" | tr -dc '0-9')"; cam="${cam:-0}"
+      _bridge_need termux-camera-photo || return 3
+      termux-camera-photo -c "$cam" "$base/out/$name" >/dev/null 2>&1 || { echo "촬영 실패 (카메라 권한 확인)"; return 1; }
+      echo "촬영됨 → ${BRIDGE_REL}/out/${name}" ;;
+    sms-send)
+      local num; num="$(printf '%s' "${1:-}" | tr -dc '0-9+')"; shift || true
+      [ -n "$num" ] || { echo "번호 이상값"; return 2; }
+      _bridge_need termux-sms-send || return 3
+      termux-sms-send -n "$num" "$*" >/dev/null 2>&1 || { echo "발송 실패 (SMS 권한 확인)"; return 1; }
+      echo "발송됨 → ${num}" ;;
+    sms-list)  _bridge_need termux-sms-list || return 3; termux-sms-list 2>&1 ;;
+    openurl)
+      local url="${1:-}"
+      case "$url" in https://*|http://*) ;; *) echo "거부: http(s) URL 만 허용"; return 2 ;; esac
+      _bridge_need termux-open-url || return 3
+      termux-open-url "$url" >/dev/null 2>&1 && echo "열림 → ${url}" || { echo "열기 실패"; return 1; } ;;
+    app)
+      local pkg; pkg="$(printf '%s' "${1:-}" | tr -dc 'A-Za-z0-9._')"
+      [ -n "$pkg" ] || { echo "패키지명 필요 (예: app com.android.chrome)"; return 2; }
+      local act; act="$(cmd package resolve-activity --brief "$pkg" 2>/dev/null | tail -n1)"
+      if [ -n "$act" ] && [ "$act" != "$pkg" ] && command -v am >/dev/null 2>&1; then
+        am start -n "$act" >/dev/null 2>&1 && echo "실행 → ${pkg}" || { echo "실행 실패"; return 1; }
+      elif command -v monkey >/dev/null 2>&1; then
+        monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && echo "실행 → ${pkg}" || { echo "실행 실패 (패키지명 확인)"; return 1; }
+      else echo "am/monkey 사용 불가 — 앱 실행 미지원 단말"; return 3; fi ;;
+    battery)   _bridge_need termux-battery-status || return 3; termux-battery-status 2>&1 ;;
+    location)  _bridge_need termux-location || return 3; termux-location 2>&1 ;;
+    contacts)  _bridge_need termux-contact-list || return 3; termux-contact-list 2>&1 ;;
+    calllog)   _bridge_need termux-call-log || return 3; termux-call-log 2>&1 ;;
+    sensors)   _bridge_need termux-sensor || return 3; termux-sensor -l 2>&1 ;;
+    clip-get)  _bridge_need termux-clipboard-get || return 3; termux-clipboard-get 2>&1 ;;
+    clip-set)  _bridge_need termux-clipboard-set || return 3; printf '%s' "$*" | termux-clipboard-set && echo "클립보드 설정됨" ;;
+    notify)
+      local title="${1:-anddev}"; shift || true
+      _bridge_need termux-notification || return 3
+      termux-notification --title "$title" --content "$*" >/dev/null 2>&1 && echo "알림 표시됨" || { echo "알림 실패"; return 1; } ;;
+    vibrate)
+      local ms; ms="$(printf '%s' "${1:-300}" | tr -dc '0-9')"; ms="${ms:-300}"
+      _bridge_need termux-vibrate || return 3
+      termux-vibrate -d "$ms" >/dev/null 2>&1 && echo "진동 ${ms}ms" ;;
+    tts)       _bridge_need termux-tts-speak || return 3; termux-tts-speak "$*" >/dev/null 2>&1 && echo "읽음" ;;
+    *) echo "알 수 없는 명령: ${verb}"; return 2 ;;
+  esac
+}
+
+# --- Termux 쪽 데몬: 요청 파일을 읽어 bridge_dispatch 실행 -------------------
+#   주: 한 요청이 실패해도 데몬 전체가 죽지 않도록 출력/코드를 || rc=$? 로 캡처.
+bridge_daemon() {
+  local base; base="$(bridge_base)"
+  mkdir -p "$base/req" "$base/res" "$base/out"
+  while true; do
+    local f
+    for f in "$base/req"/*.req; do
+      [ -e "$f" ] || continue
+      local id rc=0 out="" lines=() verb args=()
+      id="$(basename "$f" .req)"
+      mapfile -t lines < "$f"
+      verb="${lines[0]:-}"
+      args=("${lines[@]:1}")
+      out="$(bridge_dispatch "$verb" "${args[@]}")" || rc=$?
+      printf 'RC=%s\n%s\n' "$rc" "$out" > "$base/res/$id.tmp"
+      mv "$base/res/$id.tmp" "$base/res/$id.res"
+      rm -f "$f"
+    done
+    sleep 0.5
+  done
+}
+
+# --- 설치 단계 훅: termux-api 패키지 + 게스트 래퍼 --------------------------
+bridge_setup() {
+  c_info "안드로이드 기능 브리지 설치 (전체 세트)..."
+  pkg install -y termux-api || c_warn "termux-api 패키지 설치 실패 — 나중에 'pkg install termux-api'"
+  bridge_install_guest_cmds
+  c_ok "브리지 명령 설치됨 (게스트에서 'phone-help' 로 목록 확인)"
+  c_warn "Termux:API '앱'도 F-Droid 에서 설치해야 동작합니다 (패키지만으론 부족)"
+}
+
+# --- 실행 단계 훅: 데몬 기동 (래퍼도 멱등 재설치해 기존 사용자도 바로 사용) --
+bridge_start() {
+  bridge_install_guest_cmds
+  c_info "안드로이드 기능 브리지 데몬 기동..."
+  bridge_daemon &
+  BRIDGE_PID=$!
+  c_ok "브리지 실행 중 (SSH 접속 후 'phone-help')"
 }
 
 # =============================================================================
