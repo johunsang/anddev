@@ -97,7 +97,7 @@ claude    # Claude Code
 | D5 | **단일 파일 `anddev.sh`** | 진짜 원터치 — clone 불필요, `curl` 한 줄로 설치+실행. 유일한 source of truth | 기존 `setup/start/connect.sh` 는 위임 shim 으로 보존 |
 | D6 | **폰 기능 = 파일 릴레이 브리지** | proot 게스트는 `termux-*` 바이너리에 직접 접근 불가(다른 libc/네임스페이스). 게스트가 요청 파일을 쓰면 Termux 데몬이 실행 → 결과 파일 반환 | 루팅 시 네임스페이스 공유로 직접 호출 가능 / 미설치 시 명령이 `rc=3` 으로 우아하게 실패 |
 | D7 | **소싱 가드 + 계약 테스트** | 신뢰 경계인 `bridge_dispatch`(임의 게스트 인자 → 폰 명령) 의 정규화/화이트리스트를 실폰 없이 검증. 스크립트 끝에 소싱 가드를 둬 `source` 시 함수만 로드 → `termux-*` 를 PATH 스텁으로 가짜 주입하고 경계값 4종(정상/매핑/None/변조)을 단언 | 가드는 `bash anddev.sh`/`curl\|bash` 동작 불변(소싱일 때만 `main` 생략) / 테스트는 순수 추가, 제품 경로 무영향 |
-| D8 | **`status` 서브커맨드 + 로그가 주소의 source** | Quick Tunnel URL 은 재시작마다 바뀌고 터미널 스크롤로 잃기 쉽다. 주소를 모델/메모리가 아니라 cloudflared 로그에서 파싱(`tunnel_host_from_log`)해 다시 출력 → `start_tunnel` 과 공유(중복 제거). 재연결로 URL 이 여러 개면 마지막(현재) 것을 쓴다 | 읽기 전용 진단(서버 안 끔) / 로그 없으면 빈값+안내, 실패 아님 / `pgrep` 없으면 생존표시만 생략 |
+| D8 | **`status` 서브커맨드 + 로그가 주소의 source** | Quick Tunnel URL 은 재시작마다 바뀌고 터미널 스크롤로 잃기 쉽다. 주소를 모델/메모리가 아니라 cloudflared 로그에서 파싱(`tunnel_host_from_log`)해 다시 출력 → `start_tunnel` 과 공유(중복 제거). 재연결로 URL 이 여러 개면 마지막(현재) 것을 쓴다. **변조 차단**: `.trycloudflare.com` 뒤에 호스트 문자가 더 붙은 라인(`…com.attacker.com`)은 prefix 로 잘리지 않게 호스트명 경계(EOL/구분자)를 강제해 통째로 무시 | 읽기 전용 진단(서버 안 끔) / 로그 없으면 빈값+안내, 실패 아님 / `pgrep` 없으면 생존표시만 생략 |
 
 ## 안드로이드 폰 기능 (Termux:API 브리지)
 

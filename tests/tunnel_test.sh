@@ -52,13 +52,20 @@ else FAIL=$((FAIL+1)); echo "  ✗ 로그 파일 부재 처리 실패 (rc=$rc ou
 echo "== 4) 변조 — 도메인/스킴 위조 라인은 무시 =="
 # trycloudflare.com 이 아닌 호스트는 매칭되지 않아야 한다 (피싱/오염 라인 차단)
 expect "다른 도메인 무시"  "" -- "https://evil.example.com\nhttp://attacker.test\n"
-# 정상 호스트 뒤에 가짜 접미사를 붙여도 trycloudflare.com 경계까지만 가져온다
-expect "접미사 위조 경계"  "good.trycloudflare.com" -- "https://good.trycloudflare.com.attacker.com\n"
+# 접미사 위조: '.trycloudflare.com' 뒤에 호스트명이 더 붙으면 실제로는 공격자 도메인.
+#   prefix 로 잘라 good.trycloudflare.com 으로 둔갑시키면 안 됨 → 통째로 무시(빈값).
+expect "접미사 위조 무시"  "" -- "https://good.trycloudflare.com.attacker.com\n"
+# 구분자 경계는 인정: 박스 보더/파이프/공백 뒤는 정상 호스트로 본다
+expect "파이프 구분자 인정" "abcd.trycloudflare.com" -- "https://abcd.trycloudflare.com|\n"
 # http(s) 스킴이 아니면(스킴 없는 평문) 매칭 안 됨
 expect "스킴 없는 평문 무시" "" -- "host=plain.trycloudflare.com (no scheme)\n"
 # 정상 + 오염이 섞여 있어도, 마지막 '유효한' trycloudflare URL 을 고른다
 expect "혼재 → 마지막 유효" "real.trycloudflare.com" -- \
   "https://evil.example.com\nhttps://real.trycloudflare.com\nplain.trycloudflare.com\n"
+# 핵심: 유효 URL '뒤'에 접미사 위조 라인이 와도 그게 '마지막 유효 호스트' 가 되면 안 됨.
+#   위조 라인은 매칭 자체가 안 되므로, 직전의 진짜 호스트가 결과여야 한다.
+expect "유효 뒤 위조접미사 무시" "valid-one.trycloudflare.com" -- \
+  "https://valid-one.trycloudflare.com\nhttps://valid-one.trycloudflare.com.attacker.com\n"
 
 echo
 echo "------------------------------------------------------------"

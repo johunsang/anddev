@@ -271,13 +271,16 @@ start_sshd() {
 
 # --- cloudflared 로그에서 현재 터널 호스트 추출 (신뢰는 검증 후 — 로그가 source) -
 #   재연결 시 로그에 URL 이 여러 개 쌓일 수 있어 "마지막(=현재)" 것을 쓴다.
-#   trycloudflare.com 도메인만 매칭(스킴/도메인 고정) → 로그 오염 라인은 무시.
+#   계약적 사고(변조 차단): '.trycloudflare.com' 뒤에 호스트명 문자([A-Za-z0-9.-])가
+#   더 붙은 라인(예: good.trycloudflare.com.attacker.com)은 실제로 공격자 도메인이므로
+#   매칭하지 않는다 — 끝이 EOL 이거나 비(非)호스트 구분자일 때만 유효 호스트로 인정.
+#   (prefix 매칭이면 접미사 위조 라인이 연결 가능한 가짜 호스트로 둔갑하므로 금지.)
 #   인자: 로그 경로(기본 TUNNEL_LOG). 없거나 못 찾으면 빈 문자열, 항상 rc=0.
 tunnel_host_from_log() {
   local log="${1:-$TUNNEL_LOG}"
   [ -f "$log" ] || return 0
-  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null \
-    | tail -n1 | sed 's#https://##' || true
+  grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com([^A-Za-z0-9.-]|$)' "$log" 2>/dev/null \
+    | tail -n1 | sed -E 's#^https://##; s#[^A-Za-z0-9.-]+$##' || true
 }
 
 # --- 2) cloudflared Quick Tunnel -------------------------------------------
