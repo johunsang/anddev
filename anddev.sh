@@ -641,4 +641,9 @@ main() {
   esac
 }
 
-main "$@"
+# 소싱(테스트)일 땐 함수 정의만 로드하고, 직접 실행/파이프(curl|bash)일 때만 main 실행.
+#   (return 은 소싱된 컨텍스트에서만 성공 → 'bash anddev.sh' / 'curl|bash' 동작은 그대로,
+#    테스트는 'source anddev.sh' 로 bridge_dispatch 등 계약 로직만 떼어 검증한다.)
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi
